@@ -23,6 +23,10 @@ early numbering
   field ( readonly )
   TravelId;
 
+  field ( mandatory )
+  CustomerId ,
+  BeginDate  ,
+  EndDate    ;
 
   create;
   update;
@@ -30,11 +34,20 @@ early numbering
 
   determination setStatusToOpen on modify { create; }
 
+  validation validateCustomer on save { create; field CustomerId; }
+  validation validateDates    on save { create; field BeginDate, EndDate; }
+
+
   draft action Activate optimized;
   draft action Discard;
   draft action Edit;
   draft action Resume;
-  draft determine action Prepare;
+  draft determine action Prepare
+  {
+   validation validateCustomer;
+   validation validateDates;
+  }
+
 
   mapping for zrap100_atravrom corresponding extensible
     {
