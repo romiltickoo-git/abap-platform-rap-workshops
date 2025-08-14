@@ -18,7 +18,15 @@ CLASS lhc_zr_rap100_atravrom DEFINITION INHERITING FROM cl_abap_behavior_handler
       validateCustomer FOR VALIDATE ON SAVE
             IMPORTING keys FOR Travel~validateCustomer,
       validateDates FOR VALIDATE ON SAVE
-            IMPORTING keys FOR Travel~validateDates.
+            IMPORTING keys FOR Travel~validateDates,
+      deductDiscount FOR MODIFY
+            IMPORTING keys FOR ACTION Travel~deductDiscount RESULT result,
+      copyTravel FOR MODIFY
+            IMPORTING keys FOR ACTION Travel~copyTravel,
+      acceptTravel FOR MODIFY
+            IMPORTING keys FOR ACTION Travel~acceptTravel RESULT result,
+      rejectTravel FOR MODIFY
+            IMPORTING keys FOR ACTION Travel~rejectTravel RESULT result.
 ENDCLASS.
 
 CLASS lhc_zr_rap100_atravrom IMPLEMENTATION.
@@ -241,6 +249,131 @@ CLASS lhc_zr_rap100_atravrom IMPLEMENTATION.
                         %element-EndDate   = if_abap_behv=>mk-on ) TO reported-travel.
       ENDIF.
     ENDLOOP.
+  ENDMETHOD.
+
+  METHOD deductDiscount.
+  DATA travels_for_update TYPE TABLE FOR UPDATE ZR_RAP100_ATRAVROM.
+  DATA(keys_with_valid_discount) = keys.
+  " read relevant travel instance data (only booking fee)
+  READ ENTITIES OF ZR_RAP100_ATRAVROM  IN LOCAL MODE
+      ENTITY Travel
+      FIELDS ( BookingFee )
+      WITH CORRESPONDING #( keys_with_valid_discount )
+      RESULT DATA(travels).
+
+  LOOP AT travels ASSIGNING FIELD-SYMBOL(<travel>).
+      DATA(reduced_fee) = <travel>-BookingFee * ( 1 - 3 / 10 ) .
+
+      APPEND VALUE #( %tky       = <travel>-%tky
+                    BookingFee = reduced_fee
+                  ) TO travels_for_update.
+  ENDLOOP.
+
+  " update data with reduced fee
+  MODIFY ENTITIES OF ZR_RAP100_ATRAVROM IN LOCAL MODE
+      ENTITY Travel
+      UPDATE FIELDS ( BookingFee )
+      WITH travels_for_update.
+
+  " read changed data for action result
+  READ ENTITIES OF ZR_RAP100_ATRAVROM IN LOCAL MODE
+      ENTITY Travel
+      ALL FIELDS WITH
+      CORRESPONDING #( travels )
+      RESULT DATA(travels_with_discount).
+
+  " set action result
+  result = VALUE #( FOR travel IN travels_with_discount ( %tky   = travel-%tky
+                                                            %param = travel ) ).
+
+  ENDMETHOD.
+
+  METHOD copyTravel.
+  DATA:
+      travels       TYPE TABLE FOR CREATE ZR_RAP100_ATRAVROM\\travel.
+
+    " remove travel instances with initial %cid (i.e., not set by caller API)
+    READ TABLE keys WITH KEY %cid = '' INTO DATA(key_with_inital_cid).
+    ASSERT key_with_inital_cid IS INITIAL.
+
+    " read the data from the travel instances to be copied
+    READ ENTITIES OF ZR_RAP100_ATRAVROM IN LOCAL MODE
+      ENTITY travel
+       ALL FIELDS WITH CORRESPONDING #( keys )
+    RESULT DATA(travel_read_result)
+    FAILED failed.
+
+    LOOP AT travel_read_result ASSIGNING FIELD-SYMBOL(<travel>).
+      " fill in travel container for creating new travel instance
+      APPEND VALUE #( %cid      = keys[ KEY entity %key = <travel>-%key ]-%cid
+                      %is_draft = keys[ KEY entity %key = <travel>-%key ]-%param-%is_draft
+                      %data     = CORRESPONDING #( <travel> EXCEPT TravelID )
+                   )
+        TO travels ASSIGNING FIELD-SYMBOL(<new_travel>).
+
+      " adjust the copied travel instance data
+      "" BeginDate must be on or after system date
+      <new_travel>-BeginDate     = cl_abap_context_info=>get_system_date( ).
+      "" EndDate must be after BeginDate
+      <new_travel>-EndDate       = cl_abap_context_info=>get_system_date( ) + 30.
+      "" OverallStatus of new instances must be set to open ('O')
+      <new_travel>-OverallStatus = travel_status-open.
+    ENDLOOP.
+
+    " create new BO instance
+    MODIFY ENTITIES OF ZR_RAP100_ATRAVROM IN LOCAL MODE
+      ENTITY travel
+        CREATE FIELDS ( AgencyID CustomerID BeginDate EndDate BookingFee
+                        TotalPrice CurrencyCode OverallStatus Description )
+          WITH travels
+      MAPPED DATA(mapped_create).
+
+    " set the new BO instances
+    mapped-travel   =  mapped_create-travel .
+  ENDMETHOD.
+
+  METHOD acceptTravel.
+  " modify travel instance
+    MODIFY ENTITIES OF ZR_RAP100_ATRAVROM IN LOCAL MODE
+      ENTITY Travel
+        UPDATE FIELDS ( OverallStatus )
+        WITH VALUE #( FOR key IN keys ( %tky          = key-%tky
+                                        OverallStatus = travel_status-accepted ) )  " 'A'
+    FAILED failed
+    REPORTED reported.
+
+    " read changed data for action result
+    READ ENTITIES OF ZR_RAP100_ATRAVROM IN LOCAL MODE
+      ENTITY Travel
+        ALL FIELDS WITH
+        CORRESPONDING #( keys )
+      RESULT DATA(travels).
+
+    " set the action result parameter
+    result = VALUE #( FOR travel IN travels ( %tky   = travel-%tky
+                                              %param = travel ) ).
+  ENDMETHOD.
+
+  METHOD rejectTravel.
+   " modify travel instance(s)
+    MODIFY ENTITIES OF ZR_RAP100_ATRAVROM IN LOCAL MODE
+      ENTITY Travel
+        UPDATE FIELDS ( OverallStatus )
+        WITH VALUE #( FOR key IN keys ( %tky          = key-%tky
+                                        OverallStatus = travel_status-rejected ) )  " 'X'
+    FAILED failed
+    REPORTED reported.
+
+    " read changed data for action result
+    READ ENTITIES OF ZR_RAP100_ATRAVROM IN LOCAL MODE
+      ENTITY Travel
+        ALL FIELDS WITH
+        CORRESPONDING #( keys )
+      RESULT DATA(travels).
+
+    " set the action result parameter
+    result = VALUE #( FOR travel IN travels ( %tky   = travel-%tky
+                                              %param = travel ) ).
   ENDMETHOD.
 
 ENDCLASS.
